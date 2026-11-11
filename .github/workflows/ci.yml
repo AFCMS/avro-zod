@@ -76,7 +76,7 @@ jobs:
     if: "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
     environment: npm-publish
     permissions:
-      contents: read
+      contents: write # Required to create the GitHub release and upload the tarball
       id-token: write # Required for OIDC authentication with npm
     env:
       TARBALL: ${{ needs.build.outputs.tarball }}
@@ -94,3 +94,13 @@ jobs:
 
       - name: Publish on NPM
         run: pnpm stage publish --provenance --access public $TARBALL
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |-
+          gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes ""
