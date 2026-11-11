@@ -93,4 +93,4 @@ jobs:
           require-lockfile: true
 
       - name: Publish on NPM
-        run: pnpm stage publish --provenance --access public --tag next $TARBALL
+        run: pnpm stage publish --provenance --access public $TARBALL
