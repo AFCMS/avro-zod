@@ -1,7 +1,7 @@
 {
   "name": "@afcms/avro-zod",
   "version": "1.0.0",
-  "description": "WIP, do not use.",
+  "description": "Convert Apache Avro schema declarations into Zod 4 validators.",
   "homepage": "https://github.com/AFCMS/avro-zod#readme",
   "bugs": {
     "url": "https://github.com/AFCMS/avro-zod/issues"
