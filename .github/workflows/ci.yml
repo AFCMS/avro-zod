@@ -61,14 +61,6 @@ jobs:
           archive: false
           path: ${{ steps.pack.outputs.tarball }}
 
-      - name: Dry Run Publish on NPM
-        if: false # "github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')"
-        run: pnpm publish --provenance --access public --dry-run --no-git-checks
-
-      - name: Publish on NPM
-        if: "startsWith(github.ref, 'refs/tags/')"
-        run: pnpm stage publish --provenance --access public --no-git-checks
-
   publish:
     name: Publish
     needs: build
