@@ -1,7 +1,7 @@
 {
   "name": "@afcms/avro-zod",
   "version": "0.0.0",
-  "description": "An experimental Devframe based devtools for Jotai",
+  "description": "WIP, do not use.",
   "homepage": "https://github.com/AFCMS/avro-zod#readme",
   "bugs": {
     "url": "https://github.com/AFCMS/avro-zod/issues"
