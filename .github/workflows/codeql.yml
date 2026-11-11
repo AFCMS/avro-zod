@@ -1,32 +1,36 @@
 ---
-name: "CodeQL Advanced"
+name: CodeQL
 
 on:
   push:
-    branches: ["master"]
+    branches:
+      - master
+    tags:
+      - "*"
   pull_request:
-    branches: ["master"]
+    branches:
+      - master
   schedule:
-    - cron: "44 2 * * 3"
+    - cron: "41 16 * * 3"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: "ubuntu-latest"
+    name: Analyze
+    runs-on: ubuntu-latest
     permissions:
-      security-events: write
-      packages: read
-      actions: read
       contents: read
+      security-events: write # Used to write the security reports to the repository
 
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: actions
-            build-mode: none
-          - language: javascript-typescript
-            build-mode: none
+        language: ["javascript", "actions"]
 
     steps:
       - name: Checkout repository
@@ -38,9 +42,7 @@ jobs:
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
-        with:
-          category: "/language:${{matrix.language}}"

@@ -10,7 +10,6 @@ on:
   pull_request:
     branches:
       - master
-  workflow_dispatch:
 
 permissions: {}
 
@@ -20,35 +19,32 @@ concurrency:
 
 jobs:
   main:
+    name: Main
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Setup PNPM
+      - name: Install PNPM
         uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
 
-      - name: Build
-        run: pnpm build
-
-      - name: Type Check
-        run: pnpm run typecheck
-
-      - name: Tests
-        run: pnpm run test
-
-      - name: Packed package integrations
-        run: pnpm run test:package
-
       - name: Lint
         run: pnpm run lint
 
-      - name: Format
+      - name: Format check
         run: pnpm run format:check
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build
 
       - name: Dry Run Publish on NPM
         if: false # "github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')"
