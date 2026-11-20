@@ -27,12 +27,12 @@ jobs:
       tarball: ${{ steps.pack.outputs.tarball }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Install PNPM
-        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        uses: pnpm/setup@v3.2.0
         with:
           install: true
           require-lockfile: true
@@ -56,7 +56,7 @@ jobs:
           echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
 
       - name: Upload Tarball
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           archive: false
           path: ${{ steps.pack.outputs.tarball }}
@@ -74,12 +74,12 @@ jobs:
       TARBALL: ${{ needs.build.outputs.tarball }}
     steps:
       - name: Download Tarball
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        uses: actions/download-artifact@v8.0.2
         with:
           name: ${{ env.TARBALL }}
 
       - name: Install PNPM
-        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        uses: pnpm/setup@v3.2.0
         with:
           runtime: node@^26
           version: 12
