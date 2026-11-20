@@ -2,16 +2,31 @@
   "name": "@afcms/avro-zod",
   "version": "1.0.0",
   "description": "Convert Apache Avro schema declarations into Zod 4 validators.",
+  "keywords": [
+    "avro",
+    "schema",
+    "zod"
+  ],
   "homepage": "https://github.com/AFCMS/avro-zod#readme",
   "bugs": {
     "url": "https://github.com/AFCMS/avro-zod/issues"
   },
   "license": "MIT",
-  "author": "AFCMS <afcm.contact@gmail.com>",
+  "author": {
+    "name": "AFCMS",
+    "email": "afcm.contact@gmail.com",
+    "url": "https://afcms.dev"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AFCMS/avro-zod.git"
   },
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/AFCMS"
+    }
+  ],
   "files": [
     "dist"
   ],
@@ -20,6 +35,10 @@
   "exports": {
     ".": "./dist/index.js",
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsdown",
@@ -35,16 +54,16 @@
   },
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.5",
-    "@vitest/coverage-v8": "^5.1.0",
+    "@vitest/coverage-v8": "^5.1.1",
     "bumpp": "^12.3.0",
     "husky": "^9.1.7",
-    "oxfmt": "^0.78.0",
-    "oxlint": "^1.93.0",
-    "oxlint-tsgolint": "^7.0.2006",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
     "publint": "^0.3.25",
     "tsdown": "^0.23.7",
     "typescript": "7.1.0-beta",
-    "vitest": "^5.1.0",
+    "vitest": "^5.1.1",
     "zod": "^4.6.7"
   },
   "peerDependencies": {
