@@ -50,29 +50,51 @@ type PrimitiveSchemas = {
   string: z.$ZodString<string>;
 };
 
-type RecordSchema<F extends readonly Field[]> = number extends F["length"]
+/** Replacement validators for Avro primitives; omitted or undefined entries use the defaults. */
+export type PrimitiveOverrides = { readonly [P in Primitive]?: z.$ZodType | undefined };
+
+export interface FromAvroOptions<M extends PrimitiveOverrides = PrimitiveOverrides> {
+  readonly primitives?: M | undefined;
+}
+
+type CheckedOverrides<M extends PrimitiveOverrides> = M &
+  Record<Exclude<keyof M, Primitive>, never>;
+
+type PrimitiveSchema<P extends Primitive, M extends PrimitiveOverrides> = M extends unknown
+  ? P extends keyof M
+    ? Extract<M[P], z.$ZodType> | (undefined extends M[P] ? PrimitiveSchemas[P] : never)
+    : PrimitiveSchemas[P]
+  : never;
+
+type RecordSchema<
+  F extends readonly Field[],
+  M extends PrimitiveOverrides,
+> = number extends F["length"]
   ? z.$ZodUnknown
   : string extends F[number]["name"]
     ? z.$ZodUnknown
-    : z.$ZodObject<{ -readonly [P in F[number] as P["name"]]: ToZod<P["type"]> }, z.$strict>;
+    : z.$ZodObject<{ -readonly [P in F[number] as P["name"]]: ToZod<P["type"], M> }, z.$strict>;
 
-type UnionSchema<S extends readonly AvroSchema[]> = number extends S["length"]
-  ? z.$ZodUnknown
-  : z.$ZodUnion<{ [K in keyof S]: ToZod<S[K]> }>;
+type UnionSchema<
+  S extends readonly AvroSchema[],
+  M extends PrimitiveOverrides,
+> = number extends S["length"] ? z.$ZodUnknown : z.$ZodUnion<{ [K in keyof S]: ToZod<S[K], M> }>;
 
 /** Preserve literal child validators; widened declarations and reference sites infer unknown. */
-export type ToZod<S extends AvroSchema> = [AvroSchema] extends [S]
+export type ToZod<S extends AvroSchema, M extends PrimitiveOverrides = {}> = [AvroSchema] extends [
+  S,
+]
   ? z.$ZodUnknown
   : S extends Primitive
-    ? PrimitiveSchemas[S]
+    ? PrimitiveSchema<S, M>
     : S extends string
       ? z.$ZodUnknown
       : S extends readonly AvroSchema[]
-        ? UnionSchema<S>
+        ? UnionSchema<S, M>
         : S extends { readonly type: infer T extends Primitive }
-          ? PrimitiveSchemas[T]
+          ? PrimitiveSchema<T, M>
           : S extends { readonly type: "record"; readonly fields: infer F extends readonly Field[] }
-            ? RecordSchema<F>
+            ? RecordSchema<F, M>
             : S extends {
                   readonly type: "enum";
                   readonly symbols: infer V extends readonly string[];
@@ -81,9 +103,9 @@ export type ToZod<S extends AvroSchema> = [AvroSchema] extends [S]
                 ? z.$ZodUnknown
                 : z.$ZodEnum<{ [K in V[number]]: K }>
               : S extends { readonly type: "array"; readonly items: infer I extends AvroSchema }
-                ? z.$ZodArray<ToZod<I>>
+                ? z.$ZodArray<ToZod<I, M>>
                 : S extends { readonly type: "map"; readonly values: infer V extends AvroSchema }
-                  ? z.$ZodRecord<z.$ZodString<string>, ToZod<V>>
+                  ? z.$ZodRecord<z.$ZodString<string>, ToZod<V, M>>
                   : S extends { readonly type: "fixed" }
                     ? PrimitiveSchemas["bytes"]
                     : z.$ZodUnknown;
@@ -149,7 +171,32 @@ function fullname(source: Record<string, unknown>, namespace: string, path: stri
   return enclosing ? `${enclosing}.${declaredName}` : declaredName;
 }
 
-function primitive(type: string): z.$ZodType | undefined {
+function readOverrides(value: unknown): ReadonlyMap<string, z.$ZodType> {
+  const overrides = new Map<string, z.$ZodType>();
+  if (value === undefined) return overrides;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid primitive overrides: expected an object");
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !primitives.has(key)) {
+      throw new Error(`Invalid primitive override "${String(key)}": expected an Avro primitive`);
+    }
+    const schema = (value as Record<string, unknown>)[key];
+    if (schema === undefined) continue;
+    if (!(schema instanceof z.$ZodType)) {
+      throw new Error(`Invalid primitive override "${key}": expected a Zod 4 schema`);
+    }
+    overrides.set(key, schema);
+  }
+  return overrides;
+}
+
+function primitive(
+  type: string,
+  overrides: ReadonlyMap<string, z.$ZodType>,
+): z.$ZodType | undefined {
+  const override = overrides.get(type);
+  if (override) return z.util.clone(override);
   switch (type) {
     case "null":
       return new z.$ZodNull({ type: "null" });
@@ -179,7 +226,13 @@ function primitive(type: string): z.$ZodType | undefined {
 }
 
 function annotate(schema: z.$ZodType, source: unknown, key: string, fullName?: string): Compiled {
-  avroMetadata.add(schema, fullName === undefined ? { source } : { source, fullName });
+  // A replacement can itself be a named Avro validator; do not inherit its fullname.
+  avroMetadata.add(
+    schema,
+    fullName === undefined && avroMetadata.get(schema)?.fullName === undefined
+      ? { source }
+      : { source, fullName },
+  );
   return { schema, key };
 }
 
@@ -188,9 +241,10 @@ function compile(
   namespace: string,
   path: string,
   names: Map<string, Definition>,
+  overrides: ReadonlyMap<string, z.$ZodType>,
 ): Compiled {
   if (typeof source === "string") {
-    const schema = primitive(source);
+    const schema = primitive(source, overrides);
     if (schema) return annotate(schema, source, `type:${source}`);
     name(source, path, true);
     const fullName = source.includes(".") || !namespace ? source : `${namespace}.${source}`;
@@ -214,7 +268,7 @@ function compile(
     for (const [index, branch] of source.entries()) {
       const branchPath = `${path}[${index}]`;
       if (Array.isArray(branch)) fail(branchPath, "unions cannot immediately contain other unions");
-      const compiled = compile(branch, namespace, branchPath, names);
+      const compiled = compile(branch, namespace, branchPath, names, overrides);
       if (seen.has(compiled.key)) fail(branchPath, `duplicate union branch ${compiled.key}`);
       seen.add(compiled.key);
       branches.push(compiled.schema);
@@ -224,14 +278,14 @@ function compile(
 
   const object = declaration(source, path);
   if (typeof object.type !== "string") fail(`${path}.type`, "expected a type name");
-  const schema = primitive(object.type);
+  const schema = primitive(object.type, overrides);
   if (schema) return annotate(schema, source, `type:${object.type}`);
 
   if (object.type === "array") {
     return annotate(
       new z.$ZodArray({
         type: "array",
-        element: compile(object.items, namespace, `${path}.items`, names).schema,
+        element: compile(object.items, namespace, `${path}.items`, names, overrides).schema,
       }),
       source,
       "type:array",
@@ -243,7 +297,7 @@ function compile(
         type: "record",
         // Zod 4.0 requires a record key's non-coerced input type to be explicit.
         keyType: new z.$ZodString({ type: "string" }) as z.$ZodString<string>,
-        valueType: compile(object.values, namespace, `${path}.values`, names).schema,
+        valueType: compile(object.values, namespace, `${path}.values`, names, overrides).schema,
       }),
       source,
       "type:map",
@@ -270,7 +324,10 @@ function compile(
       const fieldName = name(field.name, `${fieldPath}.name`);
       if (seen.has(fieldName)) fail(`${fieldPath}.name`, `duplicate field "${fieldName}"`);
       seen.add(fieldName);
-      return [fieldName, compile(field.type, childNamespace, `${fieldPath}.type`, names).schema];
+      return [
+        fieldName,
+        compile(field.type, childNamespace, `${fieldPath}.type`, names, overrides).schema,
+      ];
     });
     namedSchema = new z.$ZodObject({
       type: "object",
@@ -324,8 +381,20 @@ function compile(
 /**
  * Convert an Avro declaration into a strict Zod 4 Core validator for unwrapped JS values.
  * Parse with the top-level functions from Zod Core, Classic, or Mini.
+ * Primitive replacements retain their exact validator, input, and output types.
  */
-export function fromAvro<const S extends AvroSchema>(source: S): ToZod<S> {
-  // The only boundary between the checked runtime walker and literal-schema inference.
-  return compile(source, "", "$", new Map()).schema as ToZod<S>;
+export function fromAvro<const S extends AvroSchema>(
+  source: S,
+  options?: { readonly primitives?: undefined },
+): ToZod<S>;
+export function fromAvro<const S extends AvroSchema, const M extends PrimitiveOverrides>(
+  source: S,
+  options: { readonly primitives: CheckedOverrides<M> },
+): ToZod<S, M>;
+export function fromAvro<const S extends AvroSchema, const M extends PrimitiveOverrides = {}>(
+  source: S,
+  options: FromAvroOptions<CheckedOverrides<M>> | undefined,
+): ToZod<S, M | {}>;
+export function fromAvro(source: AvroSchema, options?: FromAvroOptions): z.$ZodType {
+  return compile(source, "", "$", new Map(), readOverrides(options?.primitives)).schema;
 }
