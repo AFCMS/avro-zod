@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod/v4/core";
 
 type Primitive = "null" | "boolean" | "int" | "long" | "float" | "double" | "bytes" | "string";
 
@@ -40,33 +40,33 @@ export type AvroSchema =
   | readonly AvroSchema[];
 
 type PrimitiveSchemas = {
-  null: z.ZodNull;
-  boolean: z.ZodBoolean;
-  int: ReturnType<typeof z.int32>;
-  long: ReturnType<typeof z.int64>;
-  float: z.ZodCustom<number, number>;
-  double: z.ZodCustom<number, number>;
-  bytes: z.ZodCustom<Uint8Array, Uint8Array>;
-  string: z.ZodString;
+  null: z.$ZodNull;
+  boolean: z.$ZodBoolean<boolean>;
+  int: z.$ZodNumberFormat;
+  long: z.$ZodBigIntFormat;
+  float: z.$ZodCustom<number, number>;
+  double: z.$ZodCustom<number, number>;
+  bytes: z.$ZodCustom<Uint8Array, Uint8Array>;
+  string: z.$ZodString<string>;
 };
 
 type RecordSchema<F extends readonly Field[]> = number extends F["length"]
-  ? z.ZodUnknown
+  ? z.$ZodUnknown
   : string extends F[number]["name"]
-    ? z.ZodUnknown
-    : z.ZodObject<{ -readonly [P in F[number] as P["name"]]: ToZod<P["type"]> }, z.core.$strict>;
+    ? z.$ZodUnknown
+    : z.$ZodObject<{ -readonly [P in F[number] as P["name"]]: ToZod<P["type"]> }, z.$strict>;
 
 type UnionSchema<S extends readonly AvroSchema[]> = number extends S["length"]
-  ? z.ZodUnknown
-  : z.ZodUnion<{ [K in keyof S]: ToZod<S[K]> }>;
+  ? z.$ZodUnknown
+  : z.$ZodUnion<{ [K in keyof S]: ToZod<S[K]> }>;
 
 /** Preserve literal child validators; widened declarations and reference sites infer unknown. */
 export type ToZod<S extends AvroSchema> = [AvroSchema] extends [S]
-  ? z.ZodUnknown
+  ? z.$ZodUnknown
   : S extends Primitive
     ? PrimitiveSchemas[S]
     : S extends string
-      ? z.ZodUnknown
+      ? z.$ZodUnknown
       : S extends readonly AvroSchema[]
         ? UnionSchema<S>
         : S extends { readonly type: infer T extends Primitive }
@@ -78,25 +78,25 @@ export type ToZod<S extends AvroSchema> = [AvroSchema] extends [S]
                   readonly symbols: infer V extends readonly string[];
                 }
               ? string extends V[number]
-                ? z.ZodUnknown
-                : z.ZodEnum<{ [K in V[number]]: K }>
+                ? z.$ZodUnknown
+                : z.$ZodEnum<{ [K in V[number]]: K }>
               : S extends { readonly type: "array"; readonly items: infer I extends AvroSchema }
-                ? z.ZodArray<ToZod<I>>
+                ? z.$ZodArray<ToZod<I>>
                 : S extends { readonly type: "map"; readonly values: infer V extends AvroSchema }
-                  ? z.ZodRecord<z.ZodString, ToZod<V>>
+                  ? z.$ZodRecord<z.$ZodString<string>, ToZod<V>>
                   : S extends { readonly type: "fixed" }
                     ? PrimitiveSchemas["bytes"]
-                    : z.ZodUnknown;
+                    : z.$ZodUnknown;
 
 /** Shallow metadata avoids recursively instantiating the Avro input type in Zod's registry. */
 export const avroMetadata = z.registry<{ source: unknown; fullName?: string }>();
 
 interface Definition {
-  schema?: z.ZodType;
+  schema?: z.$ZodType;
 }
 
 interface Compiled {
-  schema: z.ZodType;
+  schema: z.$ZodType;
   // Avro union identity differs from the JavaScript representation of a branch.
   key: string;
 }
@@ -149,28 +149,36 @@ function fullname(source: Record<string, unknown>, namespace: string, path: stri
   return enclosing ? `${enclosing}.${declaredName}` : declaredName;
 }
 
-function primitive(type: string): z.ZodType | undefined {
+function primitive(type: string): z.$ZodType | undefined {
   switch (type) {
     case "null":
-      return z.null();
+      return new z.$ZodNull({ type: "null" });
     case "boolean":
-      return z.boolean();
+      return new z.$ZodBoolean({ type: "boolean" });
     case "int":
-      return z.int32();
+      return z._int32(z.$ZodNumberFormat);
     case "long":
-      return z.int64();
+      return z._int64(z.$ZodBigIntFormat);
     // z.number() excludes NaN and infinities, which Avro floating point values allow.
     case "float":
     case "double":
-      return z.custom<number>((value) => typeof value === "number", "Expected a number");
+      return z._custom<number>(
+        z.$ZodCustom,
+        (value) => typeof value === "number",
+        "Expected a number",
+      );
     case "bytes":
-      return z.instanceof(Uint8Array);
+      return z._custom<Uint8Array>(
+        z.$ZodCustom,
+        (value) => value instanceof Uint8Array,
+        "Input not instance of Uint8Array",
+      );
     case "string":
-      return z.string();
+      return new z.$ZodString({ type: "string" });
   }
 }
 
-function annotate(schema: z.ZodType, source: unknown, key: string, fullName?: string): Compiled {
+function annotate(schema: z.$ZodType, source: unknown, key: string, fullName?: string): Compiled {
   avroMetadata.add(schema, fullName === undefined ? { source } : { source, fullName });
   return { schema, key };
 }
@@ -189,9 +197,12 @@ function compile(
     const definition = names.get(fullName);
     if (!definition) fail(path, `unresolved or forward reference "${fullName}"`);
     if (definition.schema) return { schema: definition.schema, key: `name:${fullName}` };
-    const lazy = z.lazy(() => {
-      if (!definition.schema) fail(path, `unfinished definition "${fullName}"`);
-      return definition.schema;
+    const lazy = new z.$ZodLazy({
+      type: "lazy",
+      getter: () => {
+        if (!definition.schema) fail(path, `unfinished definition "${fullName}"`);
+        return definition.schema;
+      },
     });
     return annotate(lazy, source, `name:${fullName}`, fullName);
   }
@@ -199,7 +210,7 @@ function compile(
   if (Array.isArray(source)) {
     if (source.length === 0) fail(path, "a union must contain at least one branch");
     const seen = new Set<string>();
-    const branches: z.ZodType[] = [];
+    const branches: z.$ZodType[] = [];
     for (const [index, branch] of source.entries()) {
       const branchPath = `${path}[${index}]`;
       if (Array.isArray(branch)) fail(branchPath, "unions cannot immediately contain other unions");
@@ -208,7 +219,7 @@ function compile(
       seen.add(compiled.key);
       branches.push(compiled.schema);
     }
-    return annotate(z.union(branches), source, "union");
+    return annotate(new z.$ZodUnion({ type: "union", options: branches }), source, "union");
   }
 
   const object = declaration(source, path);
@@ -218,14 +229,22 @@ function compile(
 
   if (object.type === "array") {
     return annotate(
-      z.array(compile(object.items, namespace, `${path}.items`, names).schema),
+      new z.$ZodArray({
+        type: "array",
+        element: compile(object.items, namespace, `${path}.items`, names).schema,
+      }),
       source,
       "type:array",
     );
   }
   if (object.type === "map") {
     return annotate(
-      z.record(z.string(), compile(object.values, namespace, `${path}.values`, names).schema),
+      new z.$ZodRecord({
+        type: "record",
+        // Zod 4.0 requires a record key's non-coerced input type to be explicit.
+        keyType: new z.$ZodString({ type: "string" }) as z.$ZodString<string>,
+        valueType: compile(object.values, namespace, `${path}.values`, names).schema,
+      }),
       source,
       "type:map",
     );
@@ -240,12 +259,12 @@ function compile(
   const definition: Definition = {};
   names.set(fullName, definition);
   const childNamespace = fullName.includes(".") ? fullName.slice(0, fullName.lastIndexOf(".")) : "";
-  let namedSchema: z.ZodType;
+  let namedSchema: z.$ZodType;
 
   if (object.type === "record") {
     const fields = list(object.fields, `${path}.fields`);
     const seen = new Set<string>();
-    const entries = fields.map((value, index): [string, z.ZodType] => {
+    const entries = fields.map((value, index): [string, z.$ZodType] => {
       const fieldPath = `${path}.fields[${index}]`;
       const field = declaration(value, fieldPath);
       const fieldName = name(field.name, `${fieldPath}.name`);
@@ -253,7 +272,11 @@ function compile(
       seen.add(fieldName);
       return [fieldName, compile(field.type, childNamespace, `${fieldPath}.type`, names).schema];
     });
-    namedSchema = z.strictObject(Object.fromEntries(entries));
+    namedSchema = new z.$ZodObject({
+      type: "object",
+      shape: Object.fromEntries(entries),
+      catchall: new z.$ZodNever({ type: "never" }),
+    });
   } else if (object.type === "enum") {
     const seen = new Set<string>();
     const symbols = list(object.symbols, `${path}.symbols`).map((value, index) => {
@@ -269,15 +292,29 @@ function compile(
     ) {
       fail(`${path}.default`, "enum default must be one of its symbols");
     }
-    namedSchema = z.enum(symbols);
+    namedSchema = new z.$ZodEnum({
+      type: "enum",
+      entries: Object.fromEntries(symbols.map((symbol) => [symbol, symbol])),
+    });
   } else {
     const size = object.size;
     if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
       fail(`${path}.size`, "expected a non-negative safe integer byte length");
     }
-    namedSchema = z
-      .instanceof(Uint8Array)
-      .refine((value) => value.byteLength === size, `Expected exactly ${size} bytes`);
+    namedSchema = new z.$ZodCustom({
+      type: "custom",
+      check: "custom",
+      fn: (value) => value instanceof Uint8Array,
+      abort: true,
+      error: () => "Input not instance of Uint8Array",
+      checks: [
+        z._refine<Uint8Array>(
+          z.$ZodCustom,
+          (value) => value.byteLength === size,
+          `Expected exactly ${size} bytes`,
+        ),
+      ],
+    });
   }
 
   definition.schema = namedSchema;
@@ -285,7 +322,8 @@ function compile(
 }
 
 /**
- * Convert a decoded Avro declaration into a strict Zod 4 validator for unwrapped JS values.
+ * Convert an Avro declaration into a strict Zod 4 Core validator for unwrapped JS values.
+ * Parse with the top-level functions from Zod Core, Classic, or Mini.
  */
 export function fromAvro<const S extends AvroSchema>(source: S): ToZod<S> {
   // The only boundary between the checked runtime walker and literal-schema inference.
