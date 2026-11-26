@@ -55,6 +55,15 @@ export type PrimitiveOverrides = { readonly [P in Primitive]?: z.$ZodType | unde
 
 export interface FromAvroOptions<M extends PrimitiveOverrides = PrimitiveOverrides> {
   readonly primitives?: M | undefined;
+  /** Opt in to Zod's global metadata registry for JSON Schema export. */
+  readonly metadata?:
+    | {
+        /** Map string-valued Avro docs to descriptions. Disabled by default. */
+        readonly description?: boolean | undefined;
+        /** Map named type fullnames to titles. Disabled by default. */
+        readonly title?: boolean | undefined;
+      }
+    | undefined;
 }
 
 type CheckedOverrides<M extends PrimitiveOverrides> = M &
@@ -115,6 +124,12 @@ export const avroMetadata = z.registry<{ source: unknown; fullName?: string }>()
 
 interface Definition {
   schema?: z.$ZodType;
+}
+
+interface Context {
+  names: Map<string, Definition>;
+  overrides: ReadonlyMap<string, z.$ZodType>;
+  metadata: NonNullable<FromAvroOptions["metadata"]>;
 }
 
 interface Compiled {
@@ -225,7 +240,13 @@ function primitive(
   }
 }
 
-function annotate(schema: z.$ZodType, source: unknown, key: string, fullName?: string): Compiled {
+function annotate(
+  schema: z.$ZodType,
+  source: string | readonly unknown[] | Record<string, unknown>,
+  key: string,
+  context: Context,
+  fullName?: string,
+): Compiled {
   // A replacement can itself be a named Avro validator; do not inherit its fullname.
   avroMetadata.add(
     schema,
@@ -233,22 +254,23 @@ function annotate(schema: z.$ZodType, source: unknown, key: string, fullName?: s
       ? { source }
       : { source, fullName },
   );
+  const metadata: z.GlobalMeta = {};
+  if (context.metadata.description && typeof source !== "string") {
+    const doc = (source as { doc?: unknown }).doc;
+    if (typeof doc === "string") metadata.description = doc;
+  }
+  if (context.metadata.title && fullName !== undefined) metadata.title = fullName;
+  if (Object.keys(metadata).length > 0) z.globalRegistry.add(schema, metadata);
   return { schema, key };
 }
 
-function compile(
-  source: unknown,
-  namespace: string,
-  path: string,
-  names: Map<string, Definition>,
-  overrides: ReadonlyMap<string, z.$ZodType>,
-): Compiled {
+function compile(source: unknown, namespace: string, path: string, context: Context): Compiled {
   if (typeof source === "string") {
-    const schema = primitive(source, overrides);
-    if (schema) return annotate(schema, source, `type:${source}`);
+    const schema = primitive(source, context.overrides);
+    if (schema) return annotate(schema, source, `type:${source}`, context);
     name(source, path, true);
     const fullName = source.includes(".") || !namespace ? source : `${namespace}.${source}`;
-    const definition = names.get(fullName);
+    const definition = context.names.get(fullName);
     if (!definition) fail(path, `unresolved or forward reference "${fullName}"`);
     if (definition.schema) return { schema: definition.schema, key: `name:${fullName}` };
     const lazy = new z.$ZodLazy({
@@ -258,7 +280,7 @@ function compile(
         return definition.schema;
       },
     });
-    return annotate(lazy, source, `name:${fullName}`, fullName);
+    return annotate(lazy, source, `name:${fullName}`, context, fullName);
   }
 
   if (Array.isArray(source)) {
@@ -268,27 +290,33 @@ function compile(
     for (const [index, branch] of source.entries()) {
       const branchPath = `${path}[${index}]`;
       if (Array.isArray(branch)) fail(branchPath, "unions cannot immediately contain other unions");
-      const compiled = compile(branch, namespace, branchPath, names, overrides);
+      const compiled = compile(branch, namespace, branchPath, context);
       if (seen.has(compiled.key)) fail(branchPath, `duplicate union branch ${compiled.key}`);
       seen.add(compiled.key);
       branches.push(compiled.schema);
     }
-    return annotate(new z.$ZodUnion({ type: "union", options: branches }), source, "union");
+    return annotate(
+      new z.$ZodUnion({ type: "union", options: branches }),
+      source,
+      "union",
+      context,
+    );
   }
 
   const object = declaration(source, path);
   if (typeof object.type !== "string") fail(`${path}.type`, "expected a type name");
-  const schema = primitive(object.type, overrides);
-  if (schema) return annotate(schema, source, `type:${object.type}`);
+  const schema = primitive(object.type, context.overrides);
+  if (schema) return annotate(schema, object, `type:${object.type}`, context);
 
   if (object.type === "array") {
     return annotate(
       new z.$ZodArray({
         type: "array",
-        element: compile(object.items, namespace, `${path}.items`, names, overrides).schema,
+        element: compile(object.items, namespace, `${path}.items`, context).schema,
       }),
-      source,
+      object,
       "type:array",
+      context,
     );
   }
   if (object.type === "map") {
@@ -297,10 +325,11 @@ function compile(
         type: "record",
         // Zod 4.0 requires a record key's non-coerced input type to be explicit.
         keyType: new z.$ZodString({ type: "string" }) as z.$ZodString<string>,
-        valueType: compile(object.values, namespace, `${path}.values`, names, overrides).schema,
+        valueType: compile(object.values, namespace, `${path}.values`, context).schema,
       }),
-      source,
+      object,
       "type:map",
+      context,
     );
   }
   if (object.type !== "record" && object.type !== "enum" && object.type !== "fixed") {
@@ -308,10 +337,10 @@ function compile(
   }
 
   const fullName = fullname(object, namespace, path);
-  if (names.has(fullName)) fail(`${path}.name`, `duplicate definition "${fullName}"`);
+  if (context.names.has(fullName)) fail(`${path}.name`, `duplicate definition "${fullName}"`);
   // Reserve the fullname before descending so self and enclosing references can resolve lazily.
   const definition: Definition = {};
-  names.set(fullName, definition);
+  context.names.set(fullName, definition);
   const childNamespace = fullName.includes(".") ? fullName.slice(0, fullName.lastIndexOf(".")) : "";
   let namedSchema: z.$ZodType;
 
@@ -324,10 +353,14 @@ function compile(
       const fieldName = name(field.name, `${fieldPath}.name`);
       if (seen.has(fieldName)) fail(`${fieldPath}.name`, `duplicate field "${fieldName}"`);
       seen.add(fieldName);
-      return [
-        fieldName,
-        compile(field.type, childNamespace, `${fieldPath}.type`, names, overrides).schema,
-      ];
+      const compiled = compile(field.type, childNamespace, `${fieldPath}.type`, context);
+      if (context.metadata.description && typeof field.doc === "string") {
+        // Named definitions stay canonical; documentation belongs to this field occurrence.
+        const fieldSchema = z.util.clone(compiled.schema);
+        z.globalRegistry.add(fieldSchema, { description: field.doc });
+        return [fieldName, fieldSchema];
+      }
+      return [fieldName, compiled.schema];
     });
     namedSchema = new z.$ZodObject({
       type: "object",
@@ -375,7 +408,7 @@ function compile(
   }
 
   definition.schema = namedSchema;
-  return annotate(namedSchema, source, `name:${fullName}`, fullName);
+  return annotate(namedSchema, object, `name:${fullName}`, context, fullName);
 }
 
 /**
@@ -385,16 +418,20 @@ function compile(
  */
 export function fromAvro<const S extends AvroSchema>(
   source: S,
-  options?: { readonly primitives?: undefined },
+  options?: FromAvroOptions<never>,
 ): ToZod<S>;
 export function fromAvro<const S extends AvroSchema, const M extends PrimitiveOverrides>(
   source: S,
-  options: { readonly primitives: CheckedOverrides<M> },
+  options: FromAvroOptions<CheckedOverrides<M>> & { readonly primitives: CheckedOverrides<M> },
 ): ToZod<S, M>;
 export function fromAvro<const S extends AvroSchema, const M extends PrimitiveOverrides = {}>(
   source: S,
   options: FromAvroOptions<CheckedOverrides<M>> | undefined,
 ): ToZod<S, M | {}>;
 export function fromAvro(source: AvroSchema, options?: FromAvroOptions): z.$ZodType {
-  return compile(source, "", "$", new Map(), readOverrides(options?.primitives)).schema;
+  return compile(source, "", "$", {
+    names: new Map(),
+    overrides: readOverrides(options?.primitives),
+    metadata: options?.metadata ?? {},
+  }).schema;
 }

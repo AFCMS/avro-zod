@@ -76,4 +76,32 @@ Replacement validators are cloned for each primitive declaration so their Avro m
 
 Replacing `long` with `z.number()` accepts numbers instead of `bigint`; it does not convert existing values. Use `z.int()` for safe integers. JavaScript numbers cannot precisely represent the full signed 64-bit range. JSON Schema conversion also requires representable validators for any other fields: the default custom `float`, `double`, `bytes`, and `fixed` validators cannot be exported directly. See [Zod's JSON Schema documentation](https://zod.dev/json-schema).
 
-Logical types validate their underlying Avro representation. Their annotations, along with defaults, aliases, docs, and field order, remain in `avroMetadata` as `{ source: unknown; fullName?: string }`. Field annotations live on the parent record's source because several fields can share one named validator. This package does not decode Avro binary or tagged JSON data, apply defaults, or convert logical values into objects such as `Date`.
+To carry Avro documentation into JSON Schema, opt into `metadata.description`. Enable `metadata.title` separately to use the resolved fullnames of records, enums, and fixed types as titles:
+
+```ts
+import { fromAvro } from "@afcms/avro-zod";
+import * as z from "zod/v4"; // or "zod/v4/mini"
+
+const DocumentedEventSchema = fromAvro(
+  {
+    type: "record",
+    name: "Event",
+    namespace: "demo",
+    doc: "An event",
+    fields: [{ name: "id", type: "long", doc: "Event identifier" }],
+  },
+  {
+    primitives: { long: z.number() },
+    metadata: { description: true, title: true },
+  },
+);
+
+z.toJSONSchema(DocumentedEventSchema);
+// description === "An event"
+// title === "demo.Event"
+// properties.id.description === "Event identifier"
+```
+
+Both flags default to `false`. String-valued `doc` annotations on schema objects map to `description`, including primitives, arrays, and maps. A field's `doc` takes precedence over its type declaration's `doc`, which takes precedence over a primitive replacement's existing description. Empty descriptions are preserved; non-string docs are ignored. Other replacement metadata is preserved. Field descriptions use isolated schema clones so fields sharing a named type can have different descriptions without changing the named definition or supplied validators. The metadata is registered in Zod's global registry, which `z.toJSONSchema` uses by default, and does not change validation or inference. Titles do not register global IDs or derive from field names.
+
+Logical types validate their underlying Avro representation. All original annotations, including defaults, aliases, docs, and field order, remain available in `avroMetadata` as `{ source: unknown; fullName?: string }`. Field declarations remain on the parent record's source, including when their descriptions are copied to Zod metadata. Defaults, aliases, field order, and logical type formats are not copied to Zod metadata. This package does not decode Avro binary or tagged JSON data, apply defaults, or convert logical values into objects such as `Date`.

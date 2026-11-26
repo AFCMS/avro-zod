@@ -370,6 +370,81 @@ test("clones isolate Avro metadata and preserve the supplied validator's refinem
   expect(z.toJSONSchema(fields.first)).toMatchObject({ description: "ID", minimum: 0 });
 });
 
+test("opt-in descriptions override replacement metadata without modifying the supplied validator", () => {
+  const replacement = z
+    .number()
+    .min(0)
+    .meta({ description: "ID", title: "Identifier", examples: [1] });
+  const source = {
+    type: "record",
+    name: "Pair",
+    fields: [
+      { name: "first", type: { type: "long", doc: "First type" }, doc: "First field" },
+      { name: "second", type: { type: "long", doc: "Second type" } },
+      { name: "third", type: "long" },
+    ],
+  } as const satisfies AvroSchema;
+  const schema = fromAvro(source, {
+    primitives: { long: replacement },
+    metadata: { description: true, title: true },
+  });
+  const fields = schema._zod.def.shape;
+  expectTypeOf(fields.first).toEqualTypeOf<typeof replacement>();
+  expectTypeOf<core.input<typeof schema>>().toEqualTypeOf<{
+    first: number;
+    second: number;
+    third: number;
+  }>();
+  expectTypeOf<core.output<typeof schema>>().toEqualTypeOf<{
+    first: number;
+    second: number;
+    third: number;
+  }>();
+  for (const [field, description] of [
+    [fields.first, "First field"],
+    [fields.second, "Second type"],
+    [fields.third, "ID"],
+  ] as const) {
+    expect(field).toBeInstanceOf(z.ZodNumber);
+    expect(field).not.toBe(replacement);
+    expect(z.toJSONSchema(field)).toMatchObject({
+      minimum: 0,
+      title: "Identifier",
+      examples: [1],
+      description,
+    });
+    expect(core.safeParse(field, -1).success).toBe(false);
+  }
+  expect(avroMetadata.get(fields.first)?.source).toBe(source.fields[0].type);
+  expect(avroMetadata.has(replacement)).toBe(false);
+  expect(replacement.meta()).toEqual({ description: "ID", title: "Identifier", examples: [1] });
+  expect(z.toJSONSchema(fromAvro("long", { primitives: { long: replacement } }))).toHaveProperty(
+    "description",
+    "ID",
+  );
+});
+
+test("metadata options preserve inference with optional primitive overrides and transforms", () => {
+  function convert(options?: FromAvroOptions<{ long: z.ZodNumber }>) {
+    const schema = fromAvro("long", options);
+    expectTypeOf(schema).toEqualTypeOf<z.ZodNumber | core.$ZodBigIntFormat>();
+    return schema;
+  }
+  const options = { metadata: { description: true }, primitives: { long: z.number() } };
+  expect(core.parse(convert(options), 1)).toBe(1);
+  expect(core.parse(convert({ metadata: { description: true } }), 1n)).toBe(1n);
+  const replacement = z.string().transform((value) => Number(value));
+  const schema = fromAvro(
+    { type: "record", name: "Transformed", fields: [{ name: "id", type: "long", doc: "ID" }] },
+    { primitives: { long: replacement }, metadata: { description: true } },
+  );
+  expectTypeOf(schema._zod.def.shape.id).toEqualTypeOf<typeof replacement>();
+  expectTypeOf<core.input<typeof schema>>().toEqualTypeOf<{ id: string }>();
+  expectTypeOf<core.output<typeof schema>>().toEqualTypeOf<{ id: number }>();
+  expect(core.parse(schema, { id: "42" })).toEqual({ id: 42 });
+  expect(core.globalRegistry.get(schema._zod.def.shape.id)).toEqual({ description: "ID" });
+});
+
 test("replacements do not inherit Avro provenance from a supplied named validator", () => {
   const source = { type: "enum", name: "Choice", symbols: ["A", "B"] } as const;
   const replacement = fromAvro(source);
